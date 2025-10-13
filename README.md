@@ -10,7 +10,7 @@ O objetivo é compreender o efeito dos parâmetros de sintonia (Kp, Ki, Kd) com 
 Clique no botão abaixo para abrir e rodar o notebook **diretamente no navegador**:
 
 [![Abrir no Colab](https://colab.research.google.com/assets/colab-badge.svg)](
-https://colab.research.google.com/github/josuemoraisgh/EININDII04_SintoniaPID/blob/main/PID_ZN_FOPDT.ipynb)
+https://colab.research.google.com/github/ININDII-UFU/EININDII04_SintoniaPID/blob/main/PID_ZN_FOPDT.ipynb)
 
 ---
 
