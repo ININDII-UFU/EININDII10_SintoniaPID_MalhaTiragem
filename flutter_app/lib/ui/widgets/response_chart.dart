@@ -11,6 +11,7 @@ class ChartSeries {
     required this.color,
     this.dashed = false,
     this.dots = false,
+    this.secondaryAxis = false,
   });
 
   final String label;
@@ -18,6 +19,12 @@ class ChartSeries {
   final Color color;
   final bool dashed;
   final bool dots;
+
+  /// Quando true, os valores desta série são reais em [ResponseChart.secondaryMin]-
+  /// [ResponseChart.secondaryMax] (ex.: MV em 0-100%), plotados no mesmo
+  /// espaço visual do eixo esquerdo mas rotulados de forma independente no
+  /// eixo direito — permite duas escalas diferentes no mesmo gráfico.
+  final bool secondaryAxis;
 }
 
 class ResponseChart extends StatelessWidget {
@@ -32,6 +39,11 @@ class ResponseChart extends StatelessWidget {
     this.onTouch,
     this.extraVerticalLines = const [],
     this.extraHorizontalLines = const [],
+    this.leftMin,
+    this.leftMax,
+    this.secondaryMin,
+    this.secondaryMax,
+    this.secondaryAxisLabel,
   });
 
   final String title;
@@ -39,6 +51,17 @@ class ResponseChart extends StatelessWidget {
   final String yLabel;
   final List<ChartSeries> series;
   final double height;
+
+  /// Faixa fixa do eixo esquerdo (PV/SP). Quando omitida, a faixa é
+  /// calculada automaticamente a partir dos dados, como antes.
+  final double? leftMin;
+  final double? leftMax;
+
+  /// Faixa real (não normalizada) das séries com [ChartSeries.secondaryAxis]
+  /// — ex.: 0 e 100 para MV em %. Necessário para desenhar o eixo direito.
+  final double? secondaryMin;
+  final double? secondaryMax;
+  final String? secondaryAxisLabel;
 
   /// Quando definido, habilita pan (arrastar) e zoom (scroll/pinch) livres
   /// no gráfico. Opcional — sem ele o gráfico permanece estático, como
@@ -73,11 +96,34 @@ class ResponseChart extends StatelessWidget {
     final all = [for (final s in visible) ...s.points];
     final minX = all.map((p) => p.t).reduce((a, b) => a < b ? a : b);
     final maxX = all.map((p) => p.t).reduce((a, b) => a > b ? a : b);
-    var minY = all.map((p) => p.y).reduce((a, b) => a < b ? a : b);
-    var maxY = all.map((p) => p.y).reduce((a, b) => a > b ? a : b);
-    final pad = (maxY - minY).abs() * 0.10 + 1e-6;
-    minY -= pad;
-    maxY += pad;
+
+    final hasSecondary =
+        secondaryMin != null &&
+        secondaryMax != null &&
+        visible.any((s) => s.secondaryAxis);
+
+    double minY;
+    double maxY;
+    if (leftMin != null && leftMax != null) {
+      minY = leftMin!;
+      maxY = leftMax!;
+    } else {
+      final boundsSource = visible.where((s) => !s.secondaryAxis).toList();
+      final boundsPoints = [
+        for (final s in boundsSource.isEmpty ? visible : boundsSource)
+          ...s.points,
+      ];
+      minY = boundsPoints.map((p) => p.y).reduce((a, b) => a < b ? a : b);
+      maxY = boundsPoints.map((p) => p.y).reduce((a, b) => a > b ? a : b);
+      final pad = (maxY - minY).abs() * 0.10 + 1e-6;
+      minY -= pad;
+      maxY += pad;
+    }
+
+    double toPlotY(ChartSeries item, double y) {
+      if (!hasSecondary || !item.secondaryAxis) return y;
+      return _toPlotSpace(y, secondaryMin!, secondaryMax!, minY, maxY);
+    }
 
     return Container(
       height: height,
@@ -146,7 +192,46 @@ class ResponseChart extends StatelessWidget {
                       const FlLine(color: Color(0xFFEAEEF3), strokeWidth: 1),
                 ),
                 titlesData: FlTitlesData(
-                  rightTitles: const AxisTitles(),
+                  rightTitles: !hasSecondary
+                      ? const AxisTitles()
+                      : AxisTitles(
+                          axisNameSize: 36,
+                          axisNameWidget: secondaryAxisLabel == null
+                              ? null
+                              : Padding(
+                                  padding: const EdgeInsets.only(bottom: 4),
+                                  child: Text(
+                                    secondaryAxisLabel!,
+                                    style: const TextStyle(
+                                      color: AppPalette.textSecondary,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                          sideTitles: SideTitles(
+                            showTitles: true,
+                            reservedSize: 40,
+                            getTitlesWidget: (value, meta) => Padding(
+                              padding: const EdgeInsets.only(left: 6),
+                              child: Text(
+                                _fmt(
+                                  _fromPlotSpace(
+                                    value,
+                                    minY,
+                                    maxY,
+                                    secondaryMin!,
+                                    secondaryMax!,
+                                  ),
+                                ),
+                                style: const TextStyle(
+                                  color: AppPalette.textSecondary,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
                   topTitles: const AxisTitles(),
                   bottomTitles: AxisTitles(
                     axisNameSize: 28,
@@ -203,8 +288,18 @@ class ResponseChart extends StatelessWidget {
                   touchTooltipData: LineTouchTooltipData(
                     getTooltipColor: (_) => AppPalette.textPrimary,
                     getTooltipItems: (spots) => spots.map((spot) {
+                      final item = visible[spot.barIndex];
+                      final realY = hasSecondary && item.secondaryAxis
+                          ? _fromPlotSpace(
+                              spot.y,
+                              minY,
+                              maxY,
+                              secondaryMin!,
+                              secondaryMax!,
+                            )
+                          : spot.y;
                       return LineTooltipItem(
-                        '${spot.x.toStringAsFixed(2)} s\n${spot.y.toStringAsFixed(3)}',
+                        '${spot.x.toStringAsFixed(2)} s\n${realY.toStringAsFixed(3)}',
                         const TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.w600,
@@ -217,7 +312,9 @@ class ResponseChart extends StatelessWidget {
                 lineBarsData: [
                   for (final item in visible)
                     LineChartBarData(
-                      spots: item.points.map((p) => FlSpot(p.t, p.y)).toList(),
+                      spots: item.points
+                          .map((p) => FlSpot(p.t, toPlotY(item, p.y)))
+                          .toList(),
                       isCurved: false,
                       color: item.dots ? Colors.transparent : item.color,
                       barWidth: item.dots ? 0 : 2.4,
@@ -312,4 +409,33 @@ String _fmt(double value) {
   if (a >= 100) return value.toStringAsFixed(0);
   if (a >= 10) return value.toStringAsFixed(1);
   return value.toStringAsFixed(2);
+}
+
+/// Remapeia [value] (na escala real de [realMin]-[realMax]) para o espaço
+/// visual compartilhado do gráfico ([plotMin]-[plotMax]) — usado para
+/// desenhar uma série de [ChartSeries.secondaryAxis] na mesma área do
+/// gráfico das séries do eixo principal, com escala independente.
+double _toPlotSpace(
+  double value,
+  double realMin,
+  double realMax,
+  double plotMin,
+  double plotMax,
+) {
+  final t = realMax == realMin ? 0.0 : (value - realMin) / (realMax - realMin);
+  return plotMin + t * (plotMax - plotMin);
+}
+
+/// Inverso de [_toPlotSpace] — usado para rotular o eixo direito e o
+/// tooltip com o valor real (não normalizado) das séries do eixo
+/// secundário.
+double _fromPlotSpace(
+  double plotValue,
+  double plotMin,
+  double plotMax,
+  double realMin,
+  double realMax,
+) {
+  final t = plotMax == plotMin ? 0.0 : (plotValue - plotMin) / (plotMax - plotMin);
+  return realMin + t * (realMax - realMin);
 }

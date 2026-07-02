@@ -27,7 +27,7 @@ class TuningSession extends ChangeNotifier {
       sp: settings.setpoint,
       pv: 0,
       mv: 0,
-      am: true,
+      am: false,
       lr: true,
     );
     _recalculate();
@@ -77,10 +77,26 @@ class TuningSession extends ChangeNotifier {
   late LoopValues loopValues;
   double manualStep = 10;
 
+  /// Escala do eixo de PV/SP no gráfico ao vivo — MV sempre usa 0-100%
+  /// (eixo secundário), mas PV pode representar qualquer grandeza física
+  /// (temperatura, vazão, nível, etc.), então unidade e faixa são
+  /// configuráveis pelo usuário.
+  String pvUnit = '%';
+  double pvMin = 0;
+  double pvMax = 100;
+
   final List<double> liveTime = [];
   final List<double> liveSp = [];
   final List<double> livePv = [];
   final List<double> liveMv = [];
+
+  // Estado interno da planta FOPDT simulada (modo "Sistema simulado"):
+  // histórico de MV para aplicar o atraso morto (deadTime) e integrador/
+  // erro anterior do controlador PID quando em modo Auto.
+  final List<SignalPoint> _simMvHistory = [];
+  double _simTime = 0;
+  double _simIntegral = 0;
+  double _simPreviousError = 0;
 
   List<TuningResult> results = const [];
   SimulationResult? simulation;
@@ -103,6 +119,16 @@ class TuningSession extends ChangeNotifier {
     connectionStatus = value == ProcessSource.simulated
         ? 'Sistema simulado selecionado.'
         : 'Modbus selecionado. Conecte quando o CLP estiver disponível.';
+    if (value == ProcessSource.simulated) {
+      _resetSimPlant();
+    }
+    notifyListeners();
+  }
+
+  void updatePvScale({String? unit, double? min, double? max}) {
+    pvUnit = unit ?? pvUnit;
+    pvMin = min ?? pvMin;
+    pvMax = max ?? pvMax;
     notifyListeners();
   }
 
@@ -254,7 +280,15 @@ class TuningSession extends ChangeNotifier {
     liveMv.clear();
     _liveElapsed = 0;
     _lastLiveTick = DateTime.now();
+    _resetSimPlant();
     notifyListeners();
+  }
+
+  void _resetSimPlant() {
+    _simMvHistory.clear();
+    _simTime = 0;
+    _simIntegral = 0;
+    _simPreviousError = 0;
   }
 
   Future<void> pollOnce() async {
@@ -424,21 +458,53 @@ class TuningSession extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// MV neutro (%) ao redor do qual o degrau de entrada da planta FOPDT é
+  /// medido — mv=50% equivale a Δu=0. É o mesmo ponto de referência usado
+  /// pelo controlador PID em modo Auto (mv = 50% + saída do PID).
+  static const double _simMvBaseline = 50;
+
   void _pollSimulatedOnce() {
     final now = DateTime.now();
     final last = _lastLiveTick ?? now;
     final dt = now.difference(last).inMilliseconds / 1000.0;
     _lastLiveTick = now;
     final step = dt <= 0 ? modbusEndpoint.pollPeriodMs / 1000.0 : dt;
+
+    final selected = selectedResult;
     var mv = loopValues.mv;
     if (loopValues.am) {
+      final gains = (selected?.gains ?? const PidGains(kp: 1, ki: 0, kd: 0))
+          .scaled(settings.gainScale);
       final error = loopValues.sp - loopValues.pv;
-      mv = (50 + 18 * error).clamp(0.0, 100.0);
+      _simIntegral += error * step;
+      final derivative = step > 0
+          ? (error - _simPreviousError) / step
+          : 0.0;
+      final unsaturated =
+          gains.kp * error + gains.ki * _simIntegral + gains.kd * derivative;
+      mv = (_simMvBaseline + unsaturated).clamp(0.0, 100.0);
+      if (mv != _simMvBaseline + unsaturated && gains.ki != 0) {
+        _simIntegral -= error * step;
+      }
+      _simPreviousError = error;
     }
-    final target = loopValues.sp + (mv - 50) * 0.02;
+
+    // Planta FOPDT real: Gp(s) = K·e^(-Ls)/(Ts+1), acionada pelo desvio de
+    // MV em relação ao ponto neutro (mesma convenção de Δu usada no cartão
+    // "Como calcular K"), com atraso morto aplicado via histórico de MV.
+    _simTime += step;
+    _simMvHistory.add(SignalPoint(_simTime, mv));
+    final horizon = fopdt.deadTime + step * 2 + 1;
+    while (_simMvHistory.length > 1 &&
+        _simTime - _simMvHistory.first.t > horizon) {
+      _simMvHistory.removeAt(0);
+    }
+    final delayedMv = _delayedSimMv(_simTime - fopdt.deadTime);
+    final timeConstant = fopdt.timeConstant > 0 ? fopdt.timeConstant : 1.0;
+    final pvSteadyState = fopdt.gain * (delayedMv - _simMvBaseline);
     final pv =
-        loopValues.pv + (target - loopValues.pv) * (step / 5).clamp(0.0, 1.0);
-    final selected = selectedResult;
+        loopValues.pv + step / timeConstant * (pvSteadyState - loopValues.pv);
+
     loopValues = loopValues.copyWith(
       pv: pv,
       mv: mv,
@@ -449,6 +515,15 @@ class TuningSession extends ChangeNotifier {
     _appendLivePoint();
     connectionStatus = 'Sistema simulado em execução.';
     notifyListeners();
+  }
+
+  double _delayedSimMv(double atTime) {
+    if (_simMvHistory.isEmpty) return _simMvBaseline;
+    if (atTime <= _simMvHistory.first.t) return _simMvHistory.first.y;
+    for (var i = _simMvHistory.length - 1; i >= 0; i--) {
+      if (_simMvHistory[i].t <= atTime) return _simMvHistory[i].y;
+    }
+    return _simMvHistory.first.y;
   }
 
   void _appendLivePoint() {

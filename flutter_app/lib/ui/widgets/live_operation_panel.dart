@@ -163,6 +163,8 @@ class _OperationConfigPanelState extends State<OperationConfigPanel> {
         const SizedBox(height: 12),
         _ConnectionCard(session: session),
         const SizedBox(height: 12),
+        _ChartScaleCard(session: session),
+        const SizedBox(height: 12),
         _PointsCard(session: session),
         const SizedBox(height: 12),
         TuningConfigCards(session: session, csvController: _csvController),
@@ -442,6 +444,17 @@ class _LiveGraphState extends State<_LiveGraph> {
     });
   }
 
+  /// Converte uma coordenada Y do gráfico (espaço da PV/SP, eixo esquerdo)
+  /// para o valor equivalente de MV (%, eixo direito) — mesma conversão de
+  /// eixo (`leftToRight`) usada pelo cursor horizontal do supervisório
+  /// original, que mostra ΔPV e ΔMV lado a lado.
+  double _mvFromPlotY(double y) {
+    final pvMin = widget.session.pvMin;
+    final pvMax = widget.session.pvMax;
+    if (pvMax == pvMin) return 0;
+    return (y - pvMin) / (pvMax - pvMin) * 100;
+  }
+
   void _handleTouch(FlTouchEvent event, LineTouchResponse? response) {
     if (event is! FlTapUpEvent) return;
     if (widget.session.liveRunning) return;
@@ -468,7 +481,12 @@ class _LiveGraphState extends State<_LiveGraph> {
   void _computeTangent(double xClick) {
     final time = widget.session.liveTime;
     final pv = widget.session.livePv;
-    if (time.length < 3 || pv.length != time.length) return;
+    final mv = widget.session.liveMv;
+    if (time.length < 3 ||
+        pv.length != time.length ||
+        mv.length != time.length) {
+      return;
+    }
 
     var i0 = 0;
     var best = double.infinity;
@@ -488,15 +506,40 @@ class _LiveGraphState extends State<_LiveGraph> {
     final slope = (pv[iNext] - pv[iPrev]) / (time[iNext] - time[iPrev]);
     if (!slope.isFinite) return;
 
-    final totalSpan = (time.last - time.first).abs();
-    final span = totalSpan <= 0 ? 1.0 : totalSpan * 0.25;
+    // Estende a tangente até cruzar a curva de MV (convertida para o mesmo
+    // espaço visual da PV) — a mesma técnica do supervisório original: a
+    // reta termina onde intercepta o patamar de MV, em vez de um
+    // comprimento fixo que dispara para fora do gráfico quando a
+    // inclinação é alta.
+    final pvMin = widget.session.pvMin;
+    final pvMax = widget.session.pvMax;
+    var bestIndex = i0;
+    var bestDiff = double.infinity;
+    for (var i = 0; i < time.length; i++) {
+      final t = time[i];
+      final yTangent = y0 + slope * (t - x0);
+      final mvInPvSpace = pvMin + (mv[i] / 100) * (pvMax - pvMin);
+      final diff = (yTangent - mvInPvSpace).abs();
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestIndex = i;
+      }
+    }
+
+    double x1;
+    double y1;
+    if (time[bestIndex] != x0) {
+      x1 = time[bestIndex];
+      y1 = y0 + slope * (x1 - x0);
+    } else {
+      final totalSpan = (time.last - time.first).abs();
+      final span = totalSpan <= 0 ? 1.0 : totalSpan * 0.25;
+      x1 = x0 + span;
+      y1 = y0 + slope * span;
+    }
+
     setState(() {
-      _tangent = _TangentReading(
-        x0: x0,
-        y0: y0,
-        x1: x0 + span,
-        y1: y0 + slope * span,
-      );
+      _tangent = _TangentReading(x0: x0, y0: y0, x1: x1, y1: y1);
     });
   }
 
@@ -522,6 +565,7 @@ class _LiveGraphState extends State<_LiveGraph> {
           label: 'MV',
           points: _points(session.liveTime, session.liveMv),
           color: AppPalette.warning,
+          secondaryAxis: true,
         ),
       if (_tangent != null)
         ChartSeries(
@@ -570,11 +614,16 @@ class _LiveGraphState extends State<_LiveGraph> {
           ResponseChart(
             title: session.processSource.label,
             xLabel: 'Tempo (s)',
-            yLabel: 'PV / SP / MV',
+            yLabel: 'PV / SP (${session.pvUnit})',
             height: 420,
             series: series,
             transformationController: _transformController,
             onTouch: _handleTouch,
+            leftMin: session.pvMin,
+            leftMax: session.pvMax,
+            secondaryMin: 0,
+            secondaryMax: 100,
+            secondaryAxisLabel: 'MV (%)',
             extraVerticalLines: [
               for (final x in _cursorXs)
                 VerticalLine(
@@ -606,10 +655,14 @@ class _LiveGraphState extends State<_LiveGraph> {
                   _DeltaPill(
                     'Δt = ${(_cursorXs[1] - _cursorXs[0]).abs().toStringAsFixed(2)} s',
                   ),
-                if (_cursorYs.length == 2)
+                if (_cursorYs.length == 2) ...[
                   _DeltaPill(
-                    'Δeixo = ${(_cursorYs[1] - _cursorYs[0]).abs().toStringAsFixed(3)}',
+                    'Δ${session.pvUnit} = ${(_cursorYs[1] - _cursorYs[0]).abs().toStringAsFixed(3)}',
                   ),
+                  _DeltaPill(
+                    'ΔMV = ${(_mvFromPlotY(_cursorYs[1]) - _mvFromPlotY(_cursorYs[0])).abs().toStringAsFixed(2)} %',
+                  ),
+                ],
                 if (_tangent != null)
                   _DeltaPill(
                     'Tangente: Δt = ${_tangent!.dt.toStringAsFixed(2)} s · ΔPV = ${_tangent!.dy.toStringAsFixed(3)}',
@@ -676,7 +729,7 @@ class _GraphToolbar extends StatelessWidget {
         ),
         _ToolButton(
           icon: Icons.swap_vert,
-          tooltip: 'Cursor horizontal (Δeixo)',
+          tooltip: 'Cursor horizontal (ΔPV/ΔMV)',
           active: activeTool == _ChartTool.horizontalCursor,
           onTap: () => onSelectTool(_ChartTool.horizontalCursor),
         ),
@@ -763,6 +816,66 @@ class _DeltaPill extends StatelessWidget {
           fontSize: 11.5,
           fontWeight: FontWeight.w600,
         ),
+      ),
+    );
+  }
+}
+
+class _ChartScaleCard extends StatelessWidget {
+  const _ChartScaleCard({required this.session});
+
+  final TuningSession session;
+
+  @override
+  Widget build(BuildContext context) {
+    return SectionCard(
+      title: 'ESCALA DO GRÁFICO',
+      icon: Icons.straighten,
+      accent: AppPalette.brandSecondary,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'MV sempre usa 0-100% (eixo direito). A escala de PV/SP '
+            '(eixo esquerdo) é livre — ajuste a unidade e a faixa conforme '
+            'a grandeza real do seu processo.',
+            style: TextStyle(
+              color: AppPalette.textSecondary,
+              fontSize: 12.5,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 10),
+          _TextValueField(
+            label: 'Unidade de PV/SP',
+            value: session.pvUnit,
+            helper: 'Ex.: %, °C, bar, m³/h.',
+            onChanged: (value) => session.updatePvScale(unit: value),
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: _NumberValueField(
+                  label: 'PV/SP mínimo',
+                  value: session.pvMin,
+                  decimals: 1,
+                  helper: '',
+                  onChanged: (value) => session.updatePvScale(min: value),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _NumberValueField(
+                  label: 'PV/SP máximo',
+                  value: session.pvMax,
+                  decimals: 1,
+                  helper: '',
+                  onChanged: (value) => session.updatePvScale(max: value),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
