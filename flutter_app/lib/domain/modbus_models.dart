@@ -33,7 +33,10 @@ enum LoopVariable {
   pv('PV', 'Process variable'),
   am('AM', 'Auto/manual'),
   lr('LR', 'Local/remoto'),
-  mv('MV', 'Manipulada');
+  mv('MV', 'Manipulada'),
+  kp('Kp', 'Ganho proporcional'),
+  ki('Ki (Ti)', 'Tempo integral gravado no CLP'),
+  kd('Kd (Td)', 'Tempo derivativo gravado no CLP');
 
   const LoopVariable(this.label, this.description);
   final String label;
@@ -183,6 +186,30 @@ class ModbusPointMap {
         scale: 0.1,
         offset: 0,
       ),
+      LoopVariable.kp: const ModbusPointConfig(
+        variable: LoopVariable.kp,
+        address: 5,
+        area: ModbusDataArea.holdingRegister,
+        format: ModbusValueFormat.uint16,
+        scale: 0.01,
+        offset: 0,
+      ),
+      LoopVariable.ki: const ModbusPointConfig(
+        variable: LoopVariable.ki,
+        address: 6,
+        area: ModbusDataArea.holdingRegister,
+        format: ModbusValueFormat.uint16,
+        scale: 0.01,
+        offset: 0,
+      ),
+      LoopVariable.kd: const ModbusPointConfig(
+        variable: LoopVariable.kd,
+        address: 7,
+        area: ModbusDataArea.holdingRegister,
+        format: ModbusValueFormat.uint16,
+        scale: 0.01,
+        offset: 0,
+      ),
     });
   }
 }
@@ -194,6 +221,9 @@ class LoopValues {
     required this.mv,
     required this.am,
     required this.lr,
+    this.kp = 0,
+    this.ki = 0,
+    this.kd = 0,
   });
 
   final double sp;
@@ -202,12 +232,24 @@ class LoopValues {
   final bool am;
   final bool lr;
 
+  /// Ganho proporcional atual no CLP.
+  final double kp;
+
+  /// Tempo integral (Ti) atual no CLP — ver [LoopVariable.ki].
+  final double ki;
+
+  /// Tempo derivativo (Td) atual no CLP — ver [LoopVariable.kd].
+  final double kd;
+
   LoopValues copyWith({
     double? sp,
     double? pv,
     double? mv,
     bool? am,
     bool? lr,
+    double? kp,
+    double? ki,
+    double? kd,
   }) {
     return LoopValues(
       sp: sp ?? this.sp,
@@ -215,6 +257,9 @@ class LoopValues {
       mv: mv ?? this.mv,
       am: am ?? this.am,
       lr: lr ?? this.lr,
+      kp: kp ?? this.kp,
+      ki: ki ?? this.ki,
+      kd: kd ?? this.kd,
     );
   }
 }

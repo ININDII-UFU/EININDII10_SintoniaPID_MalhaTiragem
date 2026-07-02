@@ -28,6 +28,10 @@ class ResponseChart extends StatelessWidget {
     required this.yLabel,
     required this.series,
     this.height = 300,
+    this.transformationController,
+    this.onTouch,
+    this.extraVerticalLines = const [],
+    this.extraHorizontalLines = const [],
   });
 
   final String title;
@@ -35,6 +39,21 @@ class ResponseChart extends StatelessWidget {
   final String yLabel;
   final List<ChartSeries> series;
   final double height;
+
+  /// Quando definido, habilita pan (arrastar) e zoom (scroll/pinch) livres
+  /// no gráfico. Opcional — sem ele o gráfico permanece estático, como
+  /// usado nas curvas de simulação/what-if.
+  final TransformationController? transformationController;
+
+  /// Callback de toque bruto (posição em pixel e em coordenada de dados),
+  /// usado pelas ferramentas de cursor/tangente do gráfico ao vivo.
+  final void Function(FlTouchEvent event, LineTouchResponse? response)?
+  onTouch;
+
+  /// Linhas verticais/horizontais extras (cursores de medição) desenhadas
+  /// por cima das séries.
+  final List<VerticalLine> extraVerticalLines;
+  final List<HorizontalLine> extraHorizontalLines;
 
   @override
   Widget build(BuildContext context) {
@@ -104,6 +123,16 @@ class ResponseChart extends StatelessWidget {
           const SizedBox(height: 10),
           Expanded(
             child: LineChart(
+              transformationConfig: transformationController == null
+                  ? const FlTransformationConfig()
+                  : FlTransformationConfig(
+                      scaleAxis: FlScaleAxis.free,
+                      panEnabled: true,
+                      scaleEnabled: true,
+                      minScale: 1,
+                      maxScale: 20,
+                      transformationController: transformationController,
+                    ),
               LineChartData(
                 minX: minX,
                 maxX: maxX <= minX ? minX + 1 : maxX,
@@ -165,7 +194,12 @@ class ResponseChart extends StatelessWidget {
                     bottom: BorderSide(color: Color(0xFFCBD5E1)),
                   ),
                 ),
+                extraLinesData: ExtraLinesData(
+                  verticalLines: extraVerticalLines,
+                  horizontalLines: extraHorizontalLines,
+                ),
                 lineTouchData: LineTouchData(
+                  touchCallback: onTouch,
                   touchTooltipData: LineTouchTooltipData(
                     getTooltipColor: (_) => AppPalette.textPrimary,
                     getTooltipItems: (spots) => spots.map((spot) {

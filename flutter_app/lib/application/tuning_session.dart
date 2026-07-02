@@ -10,17 +10,6 @@ import '../domain/tuning_models.dart';
 import '../infrastructure/config/app_config_store.dart';
 import '../infrastructure/modbus/modbus_client.dart';
 
-enum WorkspaceSection {
-  operation('Operação', 'Simulado ou Modbus'),
-  reaction('Degrau', 'Malha aberta'),
-  ultimate('Oscilação', 'Malha fechada'),
-  simulation('Simulação', 'Curvas e pontos');
-
-  const WorkspaceSection(this.label, this.subtitle);
-  final String label;
-  final String subtitle;
-}
-
 class TuningSession extends ChangeNotifier {
   TuningSession({
     this.reactionStrategy = const ReactionCurveTuningStrategy(),
@@ -52,7 +41,6 @@ class TuningSession extends ChangeNotifier {
   final AppModbusClient modbusClient;
   final AppConfigStore configStore;
 
-  WorkspaceSection section = WorkspaceSection.operation;
   TuningMethod method = TuningMethod.reactionCurve;
   ControllerKind controllerKind = ControllerKind.pid;
   ProcessSource processSource = ProcessSource.simulated;
@@ -108,11 +96,6 @@ class TuningSession extends ChangeNotifier {
       if (result.kind == controllerKind) return result;
     }
     return results.isEmpty ? null : results.last;
-  }
-
-  void selectSection(WorkspaceSection value) {
-    section = value;
-    notifyListeners();
   }
 
   void setProcessSource(ProcessSource value) {
@@ -318,6 +301,29 @@ class TuningSession extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Envia o resultado de sintonia selecionado (Kp, Ti e Td) ao CLP real via
+  /// Modbus, gravando nos pontos [LoopVariable.kp]/[LoopVariable.ki]/
+  /// [LoopVariable.kd]. Ti e Td vão nos registradores rotulados "Ki"/"Kd"
+  /// porque é assim que a maioria dos controladores de campo armazena a
+  /// sintonia (forma Kp/Ti/Td, não Kp/Ki/Kd).
+  Future<void> sendTuningToPlc() async {
+    final result = selectedResult;
+    if (result == null) return;
+    if (processSource != ProcessSource.modbus || !modbusConnected) {
+      connectionStatus = 'Conecte ao Modbus para enviar a sintonia ao CLP.';
+      notifyListeners();
+      return;
+    }
+    final ti = result.gains.ti ?? 0;
+    final td = result.gains.td ?? 0;
+    await _writePoint(LoopVariable.kp, result.gains.kp);
+    await _writePoint(LoopVariable.ki, ti);
+    await _writePoint(LoopVariable.kd, td);
+    loopValues = loopValues.copyWith(kp: result.gains.kp, ki: ti, kd: td);
+    connectionStatus = 'Sintonia (Kp/Ti/Td) enviada ao CLP.';
+    notifyListeners();
+  }
+
   void loadPoints(String raw) {
     final points = pointParser.parse(raw);
     importedPoints = points;
@@ -387,12 +393,27 @@ class TuningSession extends ChangeNotifier {
         modbusEndpoint,
         modbusPoints[LoopVariable.lr],
       );
+      final kp = await modbusClient.read(
+        modbusEndpoint,
+        modbusPoints[LoopVariable.kp],
+      );
+      final ki = await modbusClient.read(
+        modbusEndpoint,
+        modbusPoints[LoopVariable.ki],
+      );
+      final kd = await modbusClient.read(
+        modbusEndpoint,
+        modbusPoints[LoopVariable.kd],
+      );
       loopValues = LoopValues(
         sp: sp,
         pv: pv,
         mv: mv,
         am: am >= 0.5,
         lr: lr >= 0.5,
+        kp: kp,
+        ki: ki,
+        kd: kd,
       );
       _appendLivePoint();
       connectionStatus =
@@ -417,7 +438,14 @@ class TuningSession extends ChangeNotifier {
     final target = loopValues.sp + (mv - 50) * 0.02;
     final pv =
         loopValues.pv + (target - loopValues.pv) * (step / 5).clamp(0.0, 1.0);
-    loopValues = loopValues.copyWith(pv: pv, mv: mv);
+    final selected = selectedResult;
+    loopValues = loopValues.copyWith(
+      pv: pv,
+      mv: mv,
+      kp: selected?.gains.kp ?? loopValues.kp,
+      ki: selected?.gains.ti ?? loopValues.ki,
+      kd: selected?.gains.td ?? loopValues.kd,
+    );
     _appendLivePoint();
     connectionStatus = 'Sistema simulado em execução.';
     notifyListeners();
