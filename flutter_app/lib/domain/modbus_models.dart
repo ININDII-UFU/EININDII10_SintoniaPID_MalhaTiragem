@@ -46,24 +46,28 @@ class ModbusEndpoint {
     required this.port,
     required this.unitId,
     required this.pollPeriodMs,
+    required this.bridgeUrl,
   });
 
   final String host;
   final int port;
   final int unitId;
   final int pollPeriodMs;
+  final String bridgeUrl;
 
   ModbusEndpoint copyWith({
     String? host,
     int? port,
     int? unitId,
     int? pollPeriodMs,
+    String? bridgeUrl,
   }) {
     return ModbusEndpoint(
       host: host ?? this.host,
       port: port ?? this.port,
       unitId: unitId ?? this.unitId,
       pollPeriodMs: pollPeriodMs ?? this.pollPeriodMs,
+      bridgeUrl: bridgeUrl ?? this.bridgeUrl,
     );
   }
 }
@@ -134,10 +138,7 @@ class ModbusPointMap {
     LoopVariable variable,
     ModbusPointConfig Function(ModbusPointConfig point) change,
   ) {
-    return ModbusPointMap({
-      ...points,
-      variable: change(points[variable]!),
-    });
+    return ModbusPointMap({...points, variable: change(points[variable]!)});
   }
 
   static ModbusPointMap defaults() {

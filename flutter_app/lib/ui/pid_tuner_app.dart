@@ -5,6 +5,7 @@ import '../domain/simulation_models.dart';
 import '../domain/tuning_models.dart';
 import 'theme/app_palette.dart';
 import 'theme/app_theme.dart';
+import 'widgets/live_operation_panel.dart';
 import 'widgets/response_chart.dart';
 import 'widgets/section_card.dart';
 
@@ -213,7 +214,7 @@ class _AppHeader extends StatelessWidget {
                     ),
                   ),
                   Text(
-                    'FOPDT · Malha aberta · Ganho último · Simulação',
+                    'Operação · Modbus TCP · FOPDT · Ziegler-Nichols',
                     style: TextStyle(color: Colors.white70, fontSize: 12.5),
                   ),
                 ],
@@ -548,7 +549,9 @@ class _ConfigPanelState extends State<_ConfigPanel> {
     return ListView(
       padding: const EdgeInsets.all(14),
       children: [
-        if (s.section == WorkspaceSection.reaction) ...[
+        if (s.section == WorkspaceSection.operation) ...[
+          OperationConfigPanel(session: s),
+        ] else if (s.section == WorkspaceSection.reaction) ...[
           _ReactionInputs(session: s),
         ] else if (s.section == WorkspaceSection.ultimate) ...[
           _UltimateInputs(session: s),
@@ -835,6 +838,9 @@ class _Workspace extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (session.section == WorkspaceSection.operation) {
+      return LiveOperationWorkspace(session: session);
+    }
     final sim = session.simulation;
     return Padding(
       padding: const EdgeInsets.all(18),
@@ -1383,6 +1389,8 @@ class _Footer extends StatelessWidget {
 
 IconData _iconForSection(WorkspaceSection section) {
   switch (section) {
+    case WorkspaceSection.operation:
+      return Icons.settings_input_component;
     case WorkspaceSection.reaction:
       return Icons.stacked_line_chart;
     case WorkspaceSection.ultimate:
@@ -1394,6 +1402,8 @@ IconData _iconForSection(WorkspaceSection section) {
 
 Color _colorForSection(WorkspaceSection section) {
   switch (section) {
+    case WorkspaceSection.operation:
+      return AppPalette.brandPrimary;
     case WorkspaceSection.reaction:
       return AppPalette.reaction;
     case WorkspaceSection.ultimate:

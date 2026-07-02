@@ -9,6 +9,9 @@ AppModbusClient createPlatformModbusClient() => ModbusTcpClient();
 
 class ModbusTcpClient implements AppModbusClient {
   Socket? _socket;
+  StreamSubscription<List<int>>? _subscription;
+  Completer<Uint8List>? _pendingResponse;
+  final List<int> _rx = [];
   int _transactionId = 0;
   Future<void> _chain = Future.value();
 
@@ -24,18 +27,27 @@ class ModbusTcpClient implements AppModbusClient {
       timeout: const Duration(seconds: 4),
     );
     _socket!.setOption(SocketOption.tcpNoDelay, true);
+    _subscription = _socket!.listen(
+      _onBytes,
+      onError: _onSocketError,
+      onDone: _onSocketDone,
+      cancelOnError: true,
+    );
   }
 
   @override
   Future<void> disconnect() async {
     final socket = _socket;
+    final subscription = _subscription;
     _socket = null;
+    _subscription = null;
+    _rx.clear();
+    _pendingResponse?.completeError(StateError('Modbus desconectado.'));
+    _pendingResponse = null;
+    await subscription?.cancel();
     if (socket != null) {
       await socket.close();
-      await socket.done.timeout(
-        const Duration(seconds: 1),
-        onTimeout: () {},
-      );
+      await socket.done.timeout(const Duration(seconds: 1), onTimeout: () {});
     }
   }
 
@@ -92,10 +104,9 @@ class ModbusTcpClient implements AppModbusClient {
 
   Future<T> _enqueue<T>(Future<T> Function() action) {
     final completer = Completer<T>();
-    _chain = _chain.then((_) => action()).then(
-      completer.complete,
-      onError: completer.completeError,
-    );
+    _chain = _chain
+        .then((_) => action())
+        .then(completer.complete, onError: completer.completeError);
     return completer.future;
   }
 
@@ -119,35 +130,50 @@ class ModbusTcpClient implements AppModbusClient {
     frame[6] = unitId & 0xFF;
     frame.setRange(7, frame.length, pdu);
 
-    final bytes = <int>[];
-    late StreamSubscription<List<int>> sub;
     final completer = Completer<Uint8List>();
-    sub = socket.listen(
-      (chunk) {
-        bytes.addAll(chunk);
-        if (bytes.length < 7) return;
-        final expected = 6 + ((bytes[4] << 8) | bytes[5]);
-        if (bytes.length >= expected && !completer.isCompleted) {
-          completer.complete(Uint8List.fromList(bytes.take(expected).toList()));
-        }
-      },
-      onError: completer.completeError,
-      onDone: () {
-        if (!completer.isCompleted) {
-          completer.completeError(StateError('Conexão Modbus encerrada.'));
-        }
-      },
-      cancelOnError: true,
-    );
+    _pendingResponse = completer;
 
     socket.add(frame);
     await socket.flush();
-    final response = await completer.future.timeout(const Duration(seconds: 3));
-    await sub.cancel();
+    final response = await completer.future.timeout(
+      const Duration(seconds: 3),
+      onTimeout: () {
+        _pendingResponse = null;
+        throw TimeoutException('Sem resposta Modbus.');
+      },
+    );
+    _pendingResponse = null;
 
     final responseTid = (response[0] << 8) | response[1];
-    if (responseTid != tid) throw const FormatException('Transaction ID inválido.');
+    if (responseTid != tid) {
+      throw const FormatException('Transaction ID inválido.');
+    }
     return response.sublist(7);
+  }
+
+  void _onBytes(List<int> chunk) {
+    _rx.addAll(chunk);
+    if (_rx.length < 7) return;
+    final expected = 6 + ((_rx[4] << 8) | _rx[5]);
+    if (_rx.length < expected) return;
+    final frame = Uint8List.fromList(_rx.take(expected).toList());
+    _rx.removeRange(0, expected);
+    final pending = _pendingResponse;
+    if (pending != null && !pending.isCompleted) {
+      pending.complete(frame);
+    }
+  }
+
+  void _onSocketError(Object error) {
+    _pendingResponse?.completeError(error);
+    _pendingResponse = null;
+    _socket = null;
+  }
+
+  void _onSocketDone() {
+    _pendingResponse?.completeError(StateError('Conexão Modbus encerrada.'));
+    _pendingResponse = null;
+    _socket = null;
   }
 
   void _throwIfException(Uint8List pdu) {

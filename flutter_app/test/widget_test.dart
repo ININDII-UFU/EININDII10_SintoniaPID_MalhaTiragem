@@ -7,7 +7,8 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(1400, 900));
     await tester.pumpWidget(const PidTunerApp());
     expect(find.text('Sintonia PID Ziegler-Nichols'), findsWidgets);
-    expect(find.text('VALORES DE SINTONIA'), findsOneWidget);
+    expect(find.text('VALORES ATUAIS'), findsOneWidget);
+    expect(find.text('GRÁFICO DE CONTROLE'), findsOneWidget);
     await tester.binding.setSurfaceSize(null);
   });
 }
